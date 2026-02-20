@@ -122,6 +122,8 @@ err:
 }
 
 void vinci_destroy(vinci* g) {
+	while (g->windows)
+		window_free(g->windows);
 	xcb_disconnect(g->connection);
 	free(g);
 }
