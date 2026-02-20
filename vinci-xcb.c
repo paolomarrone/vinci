@@ -21,6 +21,7 @@
 #include "vinci.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <xcb/xcb.h>
 //#include <stdio.h>
 
@@ -55,9 +56,11 @@ vinci* vinci_new(void) {
 	if (g == NULL)
 		return NULL;
 
+	g->connection = NULL;
 	g->connection = xcb_connect(NULL, NULL);
 	if (xcb_connection_has_error(g->connection)) {
 		xcb_disconnect(g->connection);
+		free(g);
 		return NULL;
 	}
 	g->screen = xcb_setup_roots_iterator(xcb_get_setup(g->connection)).data;
@@ -112,6 +115,8 @@ vinci* vinci_new(void) {
 	return g;
 
 err:
+	if (g->connection)
+		xcb_disconnect(g->connection);
 	free(g);
 	return NULL;
 }
@@ -123,7 +128,7 @@ void vinci_destroy(vinci* g) {
 
 static window* get_window(vinci* g, xcb_window_t xw) {
 	window* w = g->windows;
-	while (w->window != xw)
+	while (w && w->window != xw)
 		w = (window*)w->next;
 	return w;
 }
@@ -145,6 +150,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_expose_event_t *x = (xcb_expose_event_t *)ev;
 			window* w = get_window(g, x->window);
+			if (!w)
+				break;
 
 			xcb_copy_area(g->connection, w->pixmap, w->window, w->gc, x->x, x->y, x->x, x->y, x->width, x->height);
 			xcb_flush(g->connection);
@@ -155,6 +162,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_configure_notify_event_t *x = (xcb_configure_notify_event_t *)ev;
 			window* w = get_window(g, x->window);
+			if (!w)
+				break;
 			
 			xcb_translate_coordinates_reply_t *trans =
 				xcb_translate_coordinates_reply(g->connection, xcb_translate_coordinates(g->connection, w->window, g->screen->root, 0, 0), NULL);
@@ -169,12 +178,16 @@ void vinci_idle(vinci *g) {
 			}
 		
 			if (x->width != w->width || x->height != w->height) {
+				void *new_bgra = realloc(w->bgra, ((uint32_t)x->width * (uint32_t)x->height) << 2);
+				if (!new_bgra)
+					break;
+				w->bgra = (uint8_t*) new_bgra;
+
 				w->width = x->width;
 				w->height = x->height;
 				xcb_free_pixmap(g->connection, w->pixmap);
 				w->pixmap = xcb_generate_id(g->connection);
 				xcb_create_pixmap(g->connection, g->screen->root_depth, w->pixmap, w->window, x->width, x->height);
-				w->bgra = (uint8_t*) realloc(w->bgra, (w->width * w->height) << 2);
 
 				if (w->cbs.on_window_resize)
 					w->cbs.on_window_resize(w, x->width, x->height);
@@ -186,6 +199,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_client_message_event_t *x = (xcb_client_message_event_t *)ev;
 			window* w = get_window(g, x->window);
+			if (!w)
+				break;
 			if (w->cbs.on_window_close) {
 				if (x->data.data32[0] == g->wm_delete_atom)
 					w->cbs.on_window_close(w);
@@ -197,6 +212,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_button_press_event_t *x = (xcb_button_press_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			// First three buttons
 			if (w->cbs.on_mouse_press) {
 				if (x->detail <= 3)
@@ -216,6 +233,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_button_release_event_t *x = (xcb_button_release_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 
 			// First three buttons
 			if (x->detail <= 3) {
@@ -233,6 +252,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_motion_notify_event_t *x = (xcb_motion_notify_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			if (w->cbs.on_mouse_move)
 				w->cbs.on_mouse_move(w, x->event_x, x->event_y, get_mouse_state(x->state, 0));
 		}
@@ -242,6 +263,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_enter_notify_event_t *x = (xcb_enter_notify_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			if (w->cbs.on_mouse_enter)
 				w->cbs.on_mouse_enter(w, x->event_x, x->event_y, get_mouse_state(x->state, 0));
 		}
@@ -251,6 +274,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_leave_notify_event_t *x = (xcb_leave_notify_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			if (w->cbs.on_mouse_leave)
 				w->cbs.on_mouse_leave(w, x->event_x, x->event_y, get_mouse_state(x->state, 0));
 		}
@@ -260,6 +285,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_key_press_event_t *x = (xcb_key_press_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			if (w->cbs.on_key_press)
 				w->cbs.on_key_press(w, x->detail, x->state);
 		}
@@ -269,6 +296,8 @@ void vinci_idle(vinci *g) {
 		{
 			xcb_key_release_event_t *x = (xcb_key_release_event_t *)ev;
 			window* w = get_window(g, x->event);
+			if (!w)
+				break;
 			if (w->cbs.on_key_release)
 				w->cbs.on_key_release(w, x->detail, x->state);
 		}
@@ -344,7 +373,10 @@ window* window_new(vinci* g, void* p, uint32_t width, uint32_t height, window_cb
 	ret->width = width;
 	ret->height = height;
 	ret->data = NULL;
-	ret->cbs = *cbs;
+	if (cbs)
+		ret->cbs = *cbs;
+	else
+		memset(&ret->cbs, 0, sizeof(window_cbs));
 
 	return ret;
 
@@ -359,8 +391,10 @@ void window_free(window* w) {
 		w->g->windows = w->next;
 	else {
 		window* n = w->g->windows;
-		while ((window*) n->next != w)
+		while (n && (window*) n->next != w)
 			n = (window*) n->next;
+		if (!n)
+			return;
 		n->next = w->next;
 	}
 
@@ -373,6 +407,16 @@ void window_free(window* w) {
 }
 
 void window_draw(window* w, unsigned char *data, int32_t dx, int32_t dy, int32_t dw, int32_t dh, int32_t wx, int32_t wy, int32_t width, int32_t height) {
+	if (dx < 0) {
+		width += dx;
+		wx -= dx;
+		dx = 0;
+	}
+	if (dy < 0) {
+		height += dy;
+		wy -= dy;
+		dy = 0;
+	}
 
 	const int32_t wx_ = wx < 0 ? 0 : wx;
 	const int32_t wy_ = wy < 0 ? 0 : wy;
@@ -385,6 +429,21 @@ void window_draw(window* w, unsigned char *data, int32_t dx, int32_t dy, int32_t
 	wx = wx_;
 	wy = wy_;
 
+	if (dx >= dw || dy >= dh)
+		return;
+	if (wx >= w->width || wy >= w->height)
+		return;
+	if (width > dw - dx)
+		width = dw - dx;
+	if (height > dh - dy)
+		height = dh - dy;
+	if (width > (int32_t)w->width - wx)
+		width = (int32_t)w->width - wx;
+	if (height > (int32_t)w->height - wy)
+		height = (int32_t)w->height - wy;
+	if (width <= 0 || height <= 0)
+		return;
+
 	uint8_t *bgra = (uint8_t*) w->bgra;
 
 	int32_t i = 0;
@@ -392,7 +451,7 @@ void window_draw(window* w, unsigned char *data, int32_t dx, int32_t dy, int32_t
 	int32_t p = (dw - width) << 2;
 
 	if (w->g->setup->image_byte_order == XCB_IMAGE_ORDER_LSB_FIRST) {
-		for (int32_t y = dy; y < dy + height && y < dh; y++) {
+		for (int32_t y = dy; y < dy + height; y++) {
 			for (int32_t x = dx; x < dx + width; x++, o += 4) {
 				bgra[i++] = data[o + 2];
 				bgra[i++] = data[o + 1];
@@ -444,9 +503,7 @@ void window_resize(window* w, uint32_t width, uint32_t height) {
 }
 
 void window_move (window* w, uint32_t x, uint32_t y) {
-	(void) x;
-	(void) y;
-	const uint32_t values[] = { w->width, w->height };
+	const uint32_t values[] = { x, y };
 	xcb_configure_window(w->g->connection, w->window, XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, values);
 	xcb_flush(w->g->connection);
 }

@@ -18,17 +18,19 @@
 # File author: Paolo Marrone
 #
 
-UNAME := $(shell uname -o)
+UNAME := $(shell uname -s)
 
-ifeq ($(UNAME),GNU/Linux)
+ifeq ($(UNAME),Linux)
 	VINCI_SRC    = vinci-xcb.c
 	EXTRAOPTIONS = -lxcb
-else ifeq ($(UNAME),Msys)
-	VINCI_SRC    = vinci-win32.c
-	EXTRAOPTIONS = -mwindows
 else ifeq ($(UNAME),Darwin)
 	VINCI_SRC    = vinci-cocoa.m
 	EXTRAOPTIONS = -framework Cocoa -lobjc
+else ifneq (,$(filter MINGW% MSYS% CYGWIN%,$(UNAME)))
+	VINCI_SRC    = vinci-win32.c
+	EXTRAOPTIONS = -mwindows
+else
+$(error Unsupported platform '$(UNAME)')
 endif
 
 CC = gcc

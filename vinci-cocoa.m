@@ -21,6 +21,7 @@
 #include "vinci.h"
 
 #include <stdint.h>
+#include <string.h>
 #import <Cocoa/Cocoa.h>
 
 #if __has_feature(objc_arc)
@@ -60,6 +61,8 @@ struct window {
 	void                *data;
 	window_cbs           cbs;
 	NSRect               default_frame;
+	char                 owns_nswindow;
+	char                 closing;
 };
 
 static uint32_t get_mouse_state(NSEvent* e) {
@@ -161,36 +164,37 @@ static uint32_t get_mouse_state(NSEvent* e) {
 
 - (void) mouseEntered : (NSEvent *) e {
 	window *w = self->win;
-	NSPoint p = e.locationInWindow;
+	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
 	if (w->cbs.on_mouse_enter)
 		w->cbs.on_mouse_enter(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
 }
 
 - (void) mouseExited : (NSEvent *) e {
 	window *w = self->win;
-	NSPoint p = e.locationInWindow;
+	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
 	if (w->cbs.on_mouse_leave)
 		w->cbs.on_mouse_leave(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
 }
 
 - (void) keyDown : (NSEvent *) e {
-	//window *w = self->win;
-	//NSPoint p = e.locationInWindow;
-	//on_key_press(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-	// TODO
+	window *w = self->win;
+	if (w->cbs.on_key_press)
+		w->cbs.on_key_press(w, (uint32_t)e.keyCode, (uint32_t)e.modifierFlags);
 }
 
 - (void) keyUp : (NSEvent *) e {
-	//window *w = self->win;
-	//NSPoint p = e.locationInWindow;
-	// TODO
+	window *w = self->win;
+	if (w->cbs.on_key_release)
+		w->cbs.on_key_release(w, (uint32_t)e.keyCode, (uint32_t)e.modifierFlags);
 }
 
 // custom
 - (void) vinci_resized {
 	window *w = self->win;
 	NSSize size = [w->view bounds].size;
-	w->img = (unsigned char*)realloc(w->img, (uint32_t) (size.width * size.height) * 4);
+	unsigned char *new_img = (unsigned char*) realloc(w->img, (uint32_t) (size.width * size.height) * 4);
+	if (new_img)
+		w->img = new_img;
 	if (w->cbs.on_window_resize)
 		w->cbs.on_window_resize(w, size.width, size.height);
 	[self setNeedsDisplay:YES];
@@ -199,14 +203,15 @@ static uint32_t get_mouse_state(NSEvent* e) {
 - (void)removeFromSuperview {
 	[super removeFromSuperview];
 	window *w = self->win;
-	if (w->cbs.on_window_close)
+	if (w && !w->closing && w->cbs.on_window_close)
 		w->cbs.on_window_close(w);
 }
 
 // Custom method for standalone application
 - (void)windowWillClose:(NSNotification *)notification {
+	(void)notification;
 	window *w = self->win;
-	if (w->cbs.on_window_close)
+	if (w && !w->closing && w->cbs.on_window_close)
 		w->cbs.on_window_close(w);
 }
 
@@ -242,6 +247,8 @@ vinci* vinci_new(void) {
 }
 
 void vinci_destroy(vinci *g) {
+	while (g->windows)
+		window_free(g->windows);
 	free(g);
 }
 
@@ -267,6 +274,7 @@ window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, wind
 	window *ret = (window*) malloc(sizeof(window));
 	if (ret == NULL)
 		return NULL;
+	memset(ret, 0, sizeof(window));
   
 	ret->default_frame = NSMakeRect(0, 0, width, height);
 
@@ -283,6 +291,7 @@ window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, wind
 	if (parent) {
 		[((__bridge NSView*)parent) addSubview:view positioned:NSWindowAbove relativeTo:nil];
 		ret->nswindow = [(__bridge NSView*)parent window];
+		ret->owns_nswindow = 0;
 		g->standalone = 0;
 	}
 	else {
@@ -293,6 +302,7 @@ window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, wind
 		                                                defer:NO];
 		[ret->nswindow setTitle:@"Vinci window"];
 		[ret->nswindow setContentView:view];
+		ret->owns_nswindow = 1;
 
 		[[NSNotificationCenter defaultCenter] addObserver:view
 		                                         selector:@selector(windowWillClose:)
@@ -301,10 +311,23 @@ window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, wind
 	}
 
 	ret->img     = (unsigned char*) malloc(width * height * 4);
+	if (!ret->img) {
+		[[NSNotificationCenter defaultCenter] removeObserver:view
+		                                                name:NSWindowWillCloseNotification
+		                                              object:ret->nswindow];
+		if (ret->owns_nswindow)
+			_OBJC_RELEASE(ret->nswindow);
+		_OBJC_RELEASE(controller);
+		free(ret);
+		return NULL;
+	}
 	ret->data    = NULL;
 	ret->nsImage = NULL;
 	ret->next    = NULL;
-	ret->cbs     = *cbs;
+	if (cbs)
+		ret->cbs = *cbs;
+	else
+		memset(&ret->cbs, 0, sizeof(window_cbs));
 
 	_OBJC_RELEASE(view);
 
@@ -321,6 +344,8 @@ window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, wind
 }
 
 void window_free(window *w) {
+	w->closing = 1;
+
 	if (w->g->windows == w) {
 		w->g->windows = w->next;
 	}
@@ -333,7 +358,20 @@ void window_free(window *w) {
 		cur->next = w->next;
 	}
 
+	[[NSNotificationCenter defaultCenter] removeObserver:w->view
+	                                                name:NSWindowWillCloseNotification
+	                                              object:w->nswindow];
 	[w->view removeTrackingArea];
+	if ([w->view superview] != nil)
+		[w->view removeFromSuperview];
+	if (w->owns_nswindow && w->nswindow) {
+		[w->nswindow setContentView:nil];
+		[w->nswindow orderOut:nil];
+	}
+	_OBJC_RELEASE(w->nsImage);
+	_OBJC_RELEASE(w->controller);
+	if (w->owns_nswindow)
+		_OBJC_RELEASE(w->nswindow);
 	free(w->img);
 	free(w);
 }
@@ -343,11 +381,46 @@ void window_draw(window *w, unsigned char *img, int32_t dx, int32_t dy, int32_t 
 		return;
 
 	NSSize size = [w->view bounds].size;
+	const int32_t vw = (int32_t) size.width;
+	const int32_t vh = (int32_t) size.height;
 
-	uint32_t iw = wy * size.width + wx;
+	if (dx < 0) {
+		width += dx;
+		wx -= dx;
+		dx = 0;
+	}
+	if (dy < 0) {
+		height += dy;
+		wy -= dy;
+		dy = 0;
+	}
+	if (wx < 0) {
+		width += wx;
+		dx -= wx;
+		wx = 0;
+	}
+	if (wy < 0) {
+		height += wy;
+		dy -= wy;
+		wy = 0;
+	}
+	if (dx >= dw || dy >= dh || wx >= vw || wy >= vh)
+		return;
+	if (width > dw - dx)
+		width = dw - dx;
+	if (height > dh - dy)
+		height = dh - dy;
+	if (width > vw - wx)
+		width = vw - wx;
+	if (height > vh - wy)
+		height = vh - wy;
+	if (width <= 0 || height <= 0)
+		return;
+
+	uint32_t iw = (uint32_t)(wy * vw + wx);
 	uint32_t o  = dy * dw + dx;
 	uint32_t p1 = dw;
-	uint32_t p2 = size.width;
+	uint32_t p2 = (uint32_t) vw;
 
 	for (int32_t y = dy; y < dy + height && y < dh; y++) {
 		memcpy(w->img + iw * 4, img + o * 4, width * 4);
@@ -394,16 +467,19 @@ void window_draw(window *w, unsigned char *img, int32_t dx, int32_t dy, int32_t 
 void window_resize (window *w, uint32_t width, uint32_t height) {
 	NSSize newSize = NSMakeSize(width, height);
 	[w->view setFrameSize:newSize]; // TODO: this sends NSViewFrameDidChangeNotification, we should handle that instead in 1 place
-	w->img = (unsigned char*)realloc(w->img, width * height * 4);
+	unsigned char *new_img = (unsigned char*) realloc(w->img, width * height * 4);
+	if (new_img)
+		w->img = new_img;
 	w->view.needsDisplay = YES;
 	if (w->cbs.on_window_resize)
 		w->cbs.on_window_resize(w, width, height); // view should be automatically informed
 }
 
 void window_move(window *w, uint32_t x, uint32_t y) {
-	(void) w;
-	(void) x;
-	(void) y;
+	if ([w->view superview] != nil)
+		[w->view setFrameOrigin:NSMakePoint(x, y)];
+	else if (w->nswindow)
+		[w->nswindow setFrameOrigin:NSMakePoint(x, y)];
 }
 
 void* window_get_handle(window *w) {
@@ -418,13 +494,21 @@ uint32_t window_get_height(window *w) {
 }
 
 void window_show(window *w) {
-	// Can we? nswindow comes from outside
-	[w->nswindow setIsVisible:YES];
+	if ([w->view superview] != nil && !w->owns_nswindow) {
+		[w->view setHidden:NO];
+		return;
+	}
+	if (w->nswindow)
+		[w->nswindow setIsVisible:YES];
 }
 
 void window_hide(window *w) {
-	(void) w;
-	//[w->nswindow setIsVisible:NO];
+	if ([w->view superview] != nil && !w->owns_nswindow) {
+		[w->view setHidden:YES];
+		return;
+	}
+	if (w->nswindow)
+		[w->nswindow setIsVisible:NO];
 }
 
 void window_set_data(window *w, void *data) {

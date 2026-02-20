@@ -21,6 +21,7 @@
 #include "vinci.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <windows.h>
 #include <stdio.h>
 
@@ -92,8 +93,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_MOUSELEAVE:
 		   	w->mouse_tracking = 0;
 		   	if (w->cbs.on_mouse_leave) {
-			   	points = MAKEPOINTS(lParam);
-			   	w->cbs.on_mouse_leave(w, points.x, points.y, get_mouse_state(wParam));
+				POINT p;
+				GetCursorPos(&p);
+				ScreenToClient(hwnd, &p);
+			   	w->cbs.on_mouse_leave(w, p.x, p.y, get_mouse_state(wParam));
 			}
 			break;
 		case WM_KEYDOWN:
@@ -114,13 +117,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 			HDC dc = GetDC(w->handle);
 			w->bitmap = CreateDIBSection(dc, (BITMAPINFO*)&w->bitmap_info, DIB_RGB_COLORS, (void **)&w->bgra, NULL, 0);
 			ReleaseDC(w->handle, dc);
+			if (w->bitmap == NULL || w->bgra == NULL)
+				break;
 			if (w->cbs.on_window_resize)
 				w->cbs.on_window_resize(w, width, height);
 		}
 			break;
 		case WM_PAINT:
 		{
-			RECT cr;;
+			RECT cr;
 			GetClientRect(w->handle, &cr);
 			RECT r;
 			if (GetUpdateRect(hwnd, &r, 0)) {
@@ -133,8 +138,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 			break;
 		case WM_DESTROY:
 		{
+			SetWindowLongPtrA(hwnd, 0, 0);
 			if (w->cbs.on_window_close)
 				w->cbs.on_window_close(w);
+			return 0;
 		}
 			break;
 	}
@@ -169,6 +176,8 @@ vinci* vinci_new(void) {
 }
 
 void vinci_destroy(vinci *g) {
+	while (g->windows)
+		window_free(g->windows);
 	UnregisterClass(g->className, NULL);
 	free(g);
 }
@@ -189,7 +198,9 @@ window* window_new(vinci *g, void* parent, uint32_t width, uint32_t height, wind
 	memset((void*) w, 0, sizeof(window));
 
 	w->g = g;
-	w->handle = CreateWindowEx(0, g->className, NULL, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, width, height, NULL, NULL, NULL, NULL);
+	RECT wr = { 0, 0, (LONG)width, (LONG)height };
+	AdjustWindowRectEx(&wr, WS_OVERLAPPEDWINDOW, FALSE, 0);
+	w->handle = CreateWindowEx(0, g->className, NULL, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top, NULL, NULL, NULL, NULL);
 	if (w->handle == NULL) {
 		free(w);
 		return NULL;
@@ -235,7 +246,10 @@ window* window_new(vinci *g, void* parent, uint32_t width, uint32_t height, wind
 	w->mouse_tracking = 1;
 
 	w->data = NULL;
-	w->cbs = *cbs;
+	if (cbs)
+		w->cbs = *cbs;
+	else
+		memset(&w->cbs, 0, sizeof(window_cbs));
 	UpdateWindow(w->handle);
 	
 	return w;
@@ -246,12 +260,17 @@ void window_free(window *w) {
 		w->g->windows = w->next;
 	else {
 		window *n = w->g->windows;
-		while (n->next != w)
+		while (n && n->next != w)
 			n = n->next;
+		if (!n)
+			return;
 		n->next = w->next;
 	}
 	DeleteObject(w->bitmap);
-	//DestroyWindow(w->handle); // This calls WM_DESTROY. So this should used to actively close a window, not as a cb
+	if (GetWindowLongPtrA(w->handle, 0) == (LONG_PTR)w) {
+		SetWindowLongPtrA(w->handle, 0, 0);
+		DestroyWindow(w->handle);
+	}
 	free(w);
 }
 
@@ -264,15 +283,27 @@ static inline int maxi(int a, int b) {
 }
 
 void window_draw(window *w, unsigned char *data, int32_t dx, int32_t dy, int32_t dw, int32_t dh, int32_t wx, int32_t wy, int32_t width, int32_t height) {	
-	(void) dh;
+	if (w->bgra == NULL)
+		return;
 
 	RECT cr;
 	GetClientRect(w->handle, &cr);
 
+	if (dx < 0) {
+		width += dx;
+		wx -= dx;
+		dx = 0;
+	}
+	if (dy < 0) {
+		height += dy;
+		wy -= dy;
+		dy = 0;
+	}
+
 	const int wx_ = maxi(wx, cr.left);
 	const int wy_ = maxi(wy, cr.top);
-	const int width_  = mini(width  - (wx_ - wx), cr.right - wx);
-	const int height_ = mini(height - (wy_ - wy), cr.bottom - wy);
+	const int width_  = mini(width  - (wx_ - wx), cr.right - wx_);
+	const int height_ = mini(height - (wy_ - wy), cr.bottom - wy_);
 	if (width_ <= 0 || height_ <= 0 )
 		return;
 	dx = dx + (wx_ - wx);
@@ -281,6 +312,14 @@ void window_draw(window *w, unsigned char *data, int32_t dx, int32_t dy, int32_t
 	wy = wy_;
 	width = width_;
 	height = height_;
+	if (dx >= dw || dy >= dh)
+		return;
+	if (width > dw - dx)
+		width = dw - dx;
+	if (height > dh - dy)
+		height = dh - dy;
+	if (width <= 0 || height <= 0)
+		return;
 
 	uint32_t *src = ((uint32_t *)data) + dw * dy + dx;
 	uint32_t *dest = ((uint32_t *)w->bgra) + w->bitmap_info.biWidth * wy + wx;
@@ -301,7 +340,11 @@ void window_draw(window *w, unsigned char *data, int32_t dx, int32_t dy, int32_t
 }
 
 void window_resize(window *w, uint32_t width, uint32_t height) {
-	SetWindowPos(w->handle, NULL, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER);
+	RECT wr = { 0, 0, (LONG)width, (LONG)height };
+	const DWORD style = (DWORD) GetWindowLongPtr(w->handle, GWL_STYLE);
+	const DWORD exstyle = (DWORD) GetWindowLongPtr(w->handle, GWL_EXSTYLE);
+	AdjustWindowRectEx(&wr, style, FALSE, exstyle);
+	SetWindowPos(w->handle, NULL, 0, 0, wr.right - wr.left, wr.bottom - wr.top, SWP_NOMOVE | SWP_NOZORDER);
 }
 
 void window_move(window *w, uint32_t x, uint32_t y) {
