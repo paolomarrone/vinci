@@ -1,7 +1,7 @@
 /*
  * Vinci
  *
- * Copyright (C) 2025 Orastron Srl unipersonale
+ * Copyright (C) 2025, 2026 Orastron Srl unipersonale
  *
  * Vinci is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with Vinci. If not, see <http://www.gnu.org/licenses/>.
  *
- * File author: Paolo Marrone
+ * File author: Paolo Marrone, Stefano D'Angelo
  */
 
 #define _XOPEN_SOURCE   600
@@ -35,7 +35,6 @@
     #define SLEEP(ms) usleep(ms * 1000)
 #endif
 
-// Function to map float [0,1] to RGB
 static uint32_t floatToRGB(float input) {
     if (input < 0.0f) input = 0.0f;
     if (input > 1.0f) input = 1.0f;
@@ -101,8 +100,9 @@ static void on_window_resize (window *w, int32_t width, int32_t height) {
 		return;
 	uint32_t p = 0;
 	for (int32_t i = 0; i < width; i++)
-		for (int32_t j = 0; j < height; j++, p++)
+		for (int32_t j = 0; j < height; j++, p++) {
 			data[p] = color;
+		}
 	window_draw(w, (unsigned char*)data, 0, 0, width, height, 0, 0, width, height);
 	free(data);
 }
@@ -129,14 +129,13 @@ int main (void) {
 	w1cbs.on_mouse_move    = on_mouse_move;
 	w1cbs.on_window_resize = on_window_resize;
 
-	w1 = window_new(g, NULL, 300, 500, &w1cbs);
+	w1 = window_new(g, NULL, 300, 500, 1, &w1cbs);
 	if (!w1) {
 		fprintf(stderr, "Failed to create first window.\n");
 		vinci_destroy(g);
 		return 1;
 	}
 	on_window_resize(w1, window_get_width(w1), window_get_height(w1)); // This is needed for x only
-	window_show(w1);
 
 	// w2
 
@@ -148,7 +147,7 @@ int main (void) {
 	w2cbs.on_mouse_move    = on_mouse_move;
 	w2cbs.on_window_resize = on_window_resize;
 
-	w2 = window_new(g, NULL, 500, 500, &w2cbs);
+	w2 = window_new(g, NULL, 500, 500, 1, &w2cbs);
 	if (!w2) {
 		fprintf(stderr, "Failed to create second window.\n");
 		window_free(w1);
@@ -156,7 +155,6 @@ int main (void) {
 		return 1;
 	}
 	on_window_resize(w2, window_get_width(w2), window_get_height(w2));
-	window_show(w2);
 
 	// I dare you to find a worse timer :)
 	active_windows = 2;

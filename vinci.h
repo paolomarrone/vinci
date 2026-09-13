@@ -1,7 +1,7 @@
 /*
  * Vinci
  *
- * Copyright (C) 2025 Orastron Srl unipersonale
+ * Copyright (C) 2025, 2026 Orastron Srl unipersonale
  *
  * Vinci is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with Vinci. If not, see <http://www.gnu.org/licenses/>.
  *
- * File author: Paolo Marrone
+ * File author: Paolo Marrone, Stefano D'Angelo
  */
 
 
@@ -48,7 +48,7 @@ typedef struct window_cbs {
 vinci*   vinci_new        (void);
 void     vinci_destroy    (vinci *g);
 void     vinci_idle       (vinci *g); // Non blocking: call it repeatedly with a timer
-window*  window_new       (vinci *g, void* p, uint32_t width, uint32_t height, window_cbs *cbs);
+window*  window_new       (vinci *g, void* p, uint32_t width, uint32_t height, char visible, window_cbs *cbs);
 void     window_free      (window *w);
 void     window_draw      (window *w, unsigned char *data, int32_t dx, int32_t dy, int32_t dw, int32_t dh, int32_t wx, int32_t wy, int32_t width, int32_t height);
 void*    window_get_handle(window *w);

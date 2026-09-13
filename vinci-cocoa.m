@@ -1,7 +1,7 @@
 /*
  * Vinci
  *
- * Copyright (C) 2022-2025 Orastron Srl unipersonale
+ * Copyright (C) 2022-2026 Orastron Srl unipersonale
  *
  * Vinci is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,12 +15,12 @@
  * You should have received a copy of the GNU General Public License
  * along with Vinci. If not, see <http://www.gnu.org/licenses/>.
  *
- * File author: Paolo Marrone
+ * File author: Stefano D'Angelo, Paolo Marrone
  */
 
 #include "vinci.h"
 
-#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #import <Cocoa/Cocoa.h>
 
@@ -30,359 +30,162 @@
 #define _OBJC_RELEASE(obj) { [obj release]; obj = nil; }
 #endif
 
-@interface VinciView : NSView
-{
-	NSTrackingArea *tracking;
-	@public window *win;
-}
-@end
-
-@interface VinciViewController : NSViewController
-{
-	@public window *win;
-}
-@property (nonatomic, strong) VinciView *vinciView;
-@end
-
 struct vinci {
-	window            *windows;
-	NSApplication     *app;
-	char               standalone; // If any view has a parent, it is not standalone
+	window *windows;
 };
 
-struct window {
-	vinci               *g;
-	window              *next;
-	NSWindow            *nswindow;
-	VinciView           *view;
-	VinciViewController *controller;
-	unsigned char       *img;
-	NSImage             *nsImage;
-	void                *data;
-	window_cbs           cbs;
-	NSRect               default_frame;
-	char                 owns_nswindow;
-	char                 closing;
-};
-
-static uint32_t get_mouse_state(NSEvent* e) {
-	(void) e;
-	return (uint32_t) [NSEvent pressedMouseButtons];
+vinci * vinci_new(void) {
+	vinci * v = (vinci *)malloc(sizeof(vinci));
+	if (v)
+		v->windows = NULL;
+	return v;
 }
 
-@implementation VinciView
-
-- (void) updateTrackingAreas {
-
-	[self removeTrackingArea];
-
-	tracking = [[NSTrackingArea alloc] initWithRect:[self bounds]
-	                                        options:NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved
-	                                          owner:self
-	                                       userInfo:nil];
-	[self addTrackingArea:tracking];
-	[super updateTrackingAreas];
-}
-
-- (void) removeTrackingArea {
-	if (tracking) {
-		[super removeTrackingArea:tracking];
-		_OBJC_RELEASE(tracking);
-		tracking = 0;
-	}
-}
-
-- (void) mouseDown : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_press)
-		w->cbs.on_mouse_press(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) mouseUp : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_release)
-		w->cbs.on_mouse_release(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) mouseMoved : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_move)
-		w->cbs.on_mouse_move(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) rightMouseDown : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_press)
-		w->cbs.on_mouse_press(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) rightMouseUp : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_release)
-		w->cbs.on_mouse_release(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) rightMouseDragged : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_move)
-		w->cbs.on_mouse_move(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) otherMouseDown : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_press)
-		w->cbs.on_mouse_press(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) otherMouseUp : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_release)
-		w->cbs.on_mouse_release(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) otherMouseDragged : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_move)
-		w->cbs.on_mouse_move(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) mouseDragged : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_move)
-		w->cbs.on_mouse_move(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) mouseEntered : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_enter)
-		w->cbs.on_mouse_enter(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) mouseExited : (NSEvent *) e {
-	window *w = self->win;
-	NSPoint p = [self convertPoint:[e locationInWindow] fromView:nil];
-	if (w->cbs.on_mouse_leave)
-		w->cbs.on_mouse_leave(w, (int32_t)p.x, self.frame.size.height - (int32_t)p.y, get_mouse_state(e));
-}
-
-- (void) keyDown : (NSEvent *) e {
-	window *w = self->win;
-	if (w->cbs.on_key_press)
-		w->cbs.on_key_press(w, (uint32_t)e.keyCode, (uint32_t)e.modifierFlags);
-}
-
-- (void) keyUp : (NSEvent *) e {
-	window *w = self->win;
-	if (w->cbs.on_key_release)
-		w->cbs.on_key_release(w, (uint32_t)e.keyCode, (uint32_t)e.modifierFlags);
-}
-
-// custom
-- (void) vinci_resized {
-	window *w = self->win;
-	NSSize size = [w->view bounds].size;
-	unsigned char *new_img = (unsigned char*) realloc(w->img, (uint32_t) (size.width * size.height) * 4);
-	if (new_img)
-		w->img = new_img;
-	if (w->cbs.on_window_resize)
-		w->cbs.on_window_resize(w, size.width, size.height);
-	[self setNeedsDisplay:YES];
-}
-
-- (void)removeFromSuperview {
-	[super removeFromSuperview];
-	window *w = self->win;
-	if (w && !w->closing && w->cbs.on_window_close)
-		w->cbs.on_window_close(w);
-}
-
-// Custom method for standalone application
-- (void)windowWillClose:(NSNotification *)notification {
-	(void)notification;
-	window *w = self->win;
-	if (w && !w->closing && w->cbs.on_window_close)
-		w->cbs.on_window_close(w);
-}
-
-- (void) drawRect:(NSRect) r {
-	[self->win->nsImage drawInRect:r fromRect:r operation:NSCompositingOperationCopy fraction:1.0];
-}
-
-@end
-
-@implementation VinciViewController
-
-- (void)loadView {
-    self.vinciView = [[VinciView alloc] initWithFrame:self->win->default_frame];
-    self.view = self.vinciView;
-}
-
-- (void)viewDidLayout {
-	[super viewDidLayout];
-	[self.vinciView vinci_resized];
-}
-
-@end
-
-vinci* vinci_new(void) {
-	vinci *g = (vinci*) malloc(sizeof(vinci));
-	if (g == NULL)
-		return NULL;
-	g->windows = NULL;
-	g->app = [NSApplication sharedApplication];
-	//[g->app setActivationPolicy:NSApplicationActivationPolicyRegular]; // TODO: check if this is a problem when not standalone
-	g->standalone = 1;
-	return g;
-}
-
-void vinci_destroy(vinci *g) {
+void vinci_destroy(vinci * g) {
 	while (g->windows)
 		window_free(g->windows);
 	free(g);
 }
 
-void vinci_idle(vinci *g) {
+void vinci_idle(vinci * g) {
 	(void) g;
 
 	NSApplication *app = [NSApplication sharedApplication];
 	NSDate *expiration = [NSDate now];
 
 	while (true) {
-		NSEvent *event = [app nextEventMatchingMask:NSEventMaskAny
-		                                  untilDate:expiration
-		                                     inMode:NSDefaultRunLoopMode
-		                                    dequeue:YES];
+		@autoreleasepool{
+		NSEvent *event = [app nextEventMatchingMask:NSEventMaskAny untilDate:expiration inMode:NSDefaultRunLoopMode dequeue:YES];
 		if (!event)
 			break;
 		[app sendEvent:event];
+		}
 	}
 }
 
-window* window_new(vinci *g, void *parent, uint32_t width, uint32_t height, window_cbs *cbs) { 
+@interface VinciView : NSView
+- (void)invalidate;
+@end
 
-	window *ret = (window*) malloc(sizeof(window));
-	if (ret == NULL)
-		return NULL;
-	memset(ret, 0, sizeof(window));
-  
-	ret->default_frame = NSMakeRect(0, 0, width, height);
-
-	VinciViewController *controller = [[VinciViewController alloc] init];
-	controller->win = ret;
-	VinciView *view = (VinciView*) controller.view;
-
-	view->win = ret;
-
-	ret->g = g;
-	ret->view = view;
-	ret->controller = controller;
-
-	if (parent) {
-		[((__bridge NSView*)parent) addSubview:view positioned:NSWindowAbove relativeTo:nil];
-		ret->nswindow = [(__bridge NSView*)parent window];
-		ret->owns_nswindow = 0;
-		g->standalone = 0;
-	}
-	else {
-		int style = NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskTitled | NSWindowStyleMaskMiniaturizable;
-		ret->nswindow = [[NSWindow alloc] initWithContentRect:ret->default_frame 
-		                                            styleMask:style
-		                                              backing:NSBackingStoreBuffered 
-		                                                defer:NO];
-		[ret->nswindow setTitle:@"Vinci window"];
-		[ret->nswindow setContentView:view];
-		ret->owns_nswindow = 1;
-
-		[[NSNotificationCenter defaultCenter] addObserver:view
-		                                         selector:@selector(windowWillClose:)
-		                                             name:NSWindowWillCloseNotification
-		                                           object:ret->nswindow];
-	}
-
-	ret->img     = (unsigned char*) malloc(width * height * 4);
-	if (!ret->img) {
-		[[NSNotificationCenter defaultCenter] removeObserver:view
-		                                                name:NSWindowWillCloseNotification
-		                                              object:ret->nswindow];
-		if (ret->owns_nswindow)
-			_OBJC_RELEASE(ret->nswindow);
-		_OBJC_RELEASE(controller);
-		free(ret);
-		return NULL;
-	}
-	ret->data    = NULL;
-	ret->nsImage = NULL;
-	ret->next    = NULL;
-	if (cbs)
-		ret->cbs = *cbs;
-	else
-		memset(&ret->cbs, 0, sizeof(window_cbs));
-
-	_OBJC_RELEASE(view);
-
-	if (g->windows == NULL)
-		g->windows = ret;
-	else {
-		window *cur = g->windows;
-		while (cur->next != NULL)
-			cur = cur->next;
-		cur->next = ret;
-	}
-
-	return ret;
+@implementation VinciView {
+	void *				handle;
+	window_cbs		cbs;
+	uint8_t *			fb;
+	NSTrackingArea *	trackingArea;
 }
 
-void window_free(window *w) {
-	w->closing = 1;
+- (instancetype) init:(CGRect)frame handle:(void *)h callbacks:(window_cbs *)callbacks {
+	self = [super initWithFrame:frame];
+	if (!self)
+		return nil;
+	handle = h;
+	cbs = *callbacks;
 
-	if (w->g->windows == w) {
-		w->g->windows = w->next;
-	}
-	else {
-		window *cur = w->g->windows;
-		while (cur != NULL && cur->next != w)
-			cur = cur->next;
-		if (cur == NULL)
-			return;
-		cur->next = w->next;
-	}
+	fb = (uint8_t *)calloc(frame.size.width * frame.size.height, 4); // handling NULL, no worries
+	[self initFb];
 
-	[[NSNotificationCenter defaultCenter] removeObserver:w->view
-	                                                name:NSWindowWillCloseNotification
-	                                              object:w->nswindow];
-	[w->view removeTrackingArea];
-	if ([w->view superview] != nil)
-		[w->view removeFromSuperview];
-	if (w->owns_nswindow && w->nswindow) {
-		[w->nswindow setContentView:nil];
-		[w->nswindow orderOut:nil];
-	}
-	_OBJC_RELEASE(w->nsImage);
-	_OBJC_RELEASE(w->controller);
-	if (w->owns_nswindow)
-		_OBJC_RELEASE(w->nswindow);
-	free(w->img);
-	free(w);
+	return self;
 }
 
-void window_draw(window *w, unsigned char *img, int32_t dx, int32_t dy, int32_t dw, int32_t dh, int32_t wx, int32_t wy, int32_t width, int32_t height) {
-	if (w->img == NULL)
+- (void)dealloc {
+	[self removeTrackingArea];
+	if (fb)
+		free(fb);
+#if !__has_feature(objc_arc)
+	[super dealloc];
+#endif
+}
+
+- (void)invalidate {
+	memset(&cbs, 0, sizeof(cbs));
+	handle = NULL;
+}
+
+- (void)removeFromSuperview {
+	[super removeFromSuperview];
+	if (cbs.on_window_close)
+		cbs.on_window_close(handle);
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+
+	size_t s = newSize.width * newSize.height * 4;
+	uint8_t * newFb = s ? (uint8_t *)realloc(fb, s) : NULL;
+	if (newFb) {
+		memset(newFb, 0, s);
+		fb = newFb;
+	} else if (fb) {
+		free(fb);
+		fb = NULL;
+	}
+	[self initFb];
+
+	if (cbs.on_window_resize)
+		cbs.on_window_resize(handle, newSize.width, newSize.height);
+}
+
+- (void)setFrameOrigin:(NSPoint)newOrigin {
+    [super setFrameOrigin:newOrigin];
+
+	if (cbs.on_window_move)
+		cbs.on_window_move(handle, newOrigin.x, newOrigin.y);
+}
+
+// TODO: this could be optimized by keeping a CGImage around repainting the dirty region etc.
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+
+    if (!fb)
 		return;
 
-	NSSize size = [w->view bounds].size;
-	const int32_t vw = (int32_t) size.width;
-	const int32_t vh = (int32_t) size.height;
+	size_t fbWidth = self.frame.size.width;
+	size_t fbHeight = self.frame.size.height;
+
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, fb, fbWidth * fbHeight * 4, NULL);
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGImageRef fullImage = CGImageCreate(
+							fbWidth, fbHeight,
+							8, 32, fbWidth * 4,
+							colorSpace,
+							kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+							provider, NULL, false, kCGRenderingIntentDefault);
+
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+
+    if (fullImage) {
+		CGContextDrawImage(ctx, NSRectToCGRect(self.bounds), fullImage);
+		CGImageRelease(fullImage);
+	}
+}
+
+- (void)initFb {
+	if (!fb)
+		return;
+
+	size_t w = self.frame.size.width;
+	size_t h = self.frame.size.height;
+	for (size_t x = 0; x < w; x++)
+		for (size_t y = 0; y < h; y++) {
+			int i = 4 * (w * y + x);
+			fb[i] = 0;
+			fb[i + 1] = 0;
+			fb[i + 2] = 0;
+			fb[i + 3] = 0xff;
+		}
+}
+
+- (void)draw:(unsigned char *)data dx:(int32_t)dx dy:(int32_t)dy dw:(int32_t)dw dh:(int32_t)dh wx:(int32_t)wx wy:(int32_t)wy width:(int32_t)width height:(int32_t)height {
+	if (!fb)
+		return;
+
+	NSSize size = [self bounds].size;
+	const int32_t vw = (int32_t)size.width;
+	const int32_t vh = (int32_t)size.height;
 
 	if (dx < 0) {
 		width += dx;
@@ -417,104 +220,281 @@ void window_draw(window *w, unsigned char *img, int32_t dx, int32_t dy, int32_t 
 	if (width <= 0 || height <= 0)
 		return;
 
-	uint32_t iw = (uint32_t)(wy * vw + wx);
-	uint32_t o  = dy * dw + dx;
-	uint32_t p1 = dw;
-	uint32_t p2 = (uint32_t) vw;
+	for (int32_t y = 0; y < height; y++)
+		for (int32_t x = 0; x < width; x++) {
+			int32_t fbi = 4 * ((int32_t)size.width * (wy + y) + wx + x);
+			int32_t datai = 4 * (dw * (dy + y) + dx + x);
+			fb[fbi] = data[datai + 2];
+			fb[fbi + 1] = data[datai + 1];
+			fb[fbi + 2] = data[datai];
+			fb[fbi + 3] = 0xff;
+		}
 
-	for (int32_t y = dy; y < dy + height && y < dh; y++) {
-		memcpy(w->img + iw * 4, img + o * 4, width * 4);
-		iw += p2;
-		o  += p1;
+	[self setNeedsDisplay:YES];
+}
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+
+    [self removeTrackingArea];
+	trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
+						options:NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved
+	                    owner:self userInfo:nil];
+	[self addTrackingArea:trackingArea];
+}
+
+- (void) removeTrackingArea {
+	if (trackingArea) {
+		[self removeTrackingArea:trackingArea];
+		_OBJC_RELEASE(trackingArea);
+	}
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_enter)
+		cbs.on_mouse_enter(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_leave)
+		cbs.on_mouse_leave(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_press)
+		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_release)
+		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)rightMouseMoved:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)rightMouseDragged:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)rightMouseDown:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_press)
+		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)rightMouseUp:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_release)
+		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)otherMouseMoved:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)otherMouseDragged:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_move)
+		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)otherMouseDown:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_press)
+		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)otherMouseUp:(NSEvent *)event {
+    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (cbs.on_mouse_release)
+		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+}
+
+- (void)keyDown:(NSEvent *)event {
+	if (cbs.on_key_press)
+		cbs.on_key_press(handle, (uint32_t)event.keyCode, (uint32_t)event.modifierFlags);
+}
+
+- (void)keyUp:(NSEvent *)event {
+	if (cbs.on_key_release)
+		cbs.on_key_release(handle, (uint32_t)event.keyCode, (uint32_t)event.modifierFlags);
+}
+
+@end
+
+struct window {
+	vinci *		g;
+	window *	next;
+	VinciView *	view;
+	NSWindow *	win;
+	window_cbs	cbs;
+	void *		data;
+	id			will_close_token;
+	id			will_move_token;
+};
+
+window * window_new(vinci * g, void * parent, uint32_t width, uint32_t height, char visible, window_cbs * cbs) {
+	window * w = (window *)calloc(1, sizeof(window));
+	if (w == NULL)
+		goto err_w;
+
+	w->g = g;
+	if (cbs)
+		w->cbs = *cbs;
+	w->data = NULL;
+
+	w->view = [[VinciView alloc] init:NSMakeRect(0, 0, width, height) handle:w callbacks:&w->cbs];
+	if (!w->view)
+		goto err_view;
+
+	if (parent) {
+		w->win = nil;
+		[((__bridge NSView *)parent) addSubview:w->view];
+	} else {
+		w->win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
+					styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+					backing:NSBackingStoreBuffered
+					defer:NO];
+		if (!w->win)
+			goto err_window;
+#if !__has_feature(objc_arc)
+		[w->win setReleasedWhenClosed:NO];
+#endif
+		w->win.contentView = w->view;
+		w->view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+		w->will_close_token = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:w->win queue:nil usingBlock:^(NSNotification *note) {
+			(void)note;
+			if (w->cbs.on_window_close)
+				w->cbs.on_window_close(w);
+		}];
+		w->will_move_token = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidMoveNotification object:w->win queue:nil usingBlock:^(NSNotification *note) {
+			(void)note;
+			if (w->cbs.on_window_move)
+				w->cbs.on_window_move(w, w->win.frame.origin.x, w->win.frame.origin.y);
+		}];
 	}
 
-	CGDataProviderRef provider = CGDataProviderCreateWithData(
-		NULL,                         // void *info
-		w->img,                       // const void *data
-		size.width * size.height * 4, // size_t size
-		NULL                          // CGDataProviderReleaseDataCallback releaseData
-	);
+	w->next = g->windows;
+	g->windows = w;
 
-	CGColorSpaceRef colorSpaceRef = CGColorSpaceCreateDeviceRGB();
-	CGBitmapInfo bitmapInfo = kCGBitmapByteOrderDefault | kCGImageAlphaNoneSkipLast;
-	CGColorRenderingIntent renderingIntent = kCGRenderingIntentDefault;
+	if (visible)
+		window_show(w);
+	else
+		window_hide(w);
 
-	CGImageRef imageRef = CGImageCreate(
-		size.width,      // size_t width
-		size.height,     // size_t height 
-		8,               // size_t bitsPerComponent
-		4 * 8,           // size_t bitsPerPixel
-		size.width * 4,  // size_t bytesPerRow
-		colorSpaceRef,   // CGColorSpaceRef space
-		bitmapInfo,      // CGBitmapInfo bitmapInfo
-		provider,        // CGDataProviderRef provider
-		NULL,            // const CGFloat *decode
-		NO,              // bool shouldInterpolate
-		renderingIntent  // CGColorRenderingIntent intent
-	);
+	return w;
 
-	NSImage* image = [[NSImage alloc] initWithCGImage: imageRef size:NSZeroSize];
-	_OBJC_RELEASE(w->nsImage);
-	w->nsImage = image;
-
-	[w->view setNeedsDisplayInRect:NSMakeRect(wx, size.height - (wy + height), width, height)];
-
-	CGDataProviderRelease(provider);
-	CGColorSpaceRelease(colorSpaceRef);
-	CGImageRelease(imageRef);
+err_window:
+	[w->view invalidate];
+	_OBJC_RELEASE(w->view);
+err_view:
+	free(w);
+err_w:
+	return NULL;
 }
 
-void window_resize (window *w, uint32_t width, uint32_t height) {
-	NSSize newSize = NSMakeSize(width, height);
-	[w->view setFrameSize:newSize]; // TODO: this sends NSViewFrameDidChangeNotification, we should handle that instead in 1 place
-	unsigned char *new_img = (unsigned char*) realloc(w->img, width * height * 4);
-	if (new_img)
-		w->img = new_img;
-	w->view.needsDisplay = YES;
-	if (w->cbs.on_window_resize)
-		w->cbs.on_window_resize(w, width, height); // view should be automatically informed
+void window_free(window * w) {
+	window **link = &w->g->windows;
+	while (*link && *link != w)
+		link = &(*link)->next;
+	if (!*link)
+		return;
+	*link = w->next;
+
+	if (w->win) {
+		[[NSNotificationCenter defaultCenter] removeObserver:w->will_close_token];
+		[[NSNotificationCenter defaultCenter] removeObserver:w->will_move_token];
+	}
+	[w->view invalidate];
+	[w->view removeTrackingArea];
+	[w->view removeFromSuperview];
+	if (w->win) {
+		[w->win setContentView:nil];
+		[w->win orderOut:nil];
+	}
+	_OBJC_RELEASE(w->view);
+	_OBJC_RELEASE(w->win);
+#if __has_feature(objc_arc)
+	w->will_close_token = nil;
+	w->will_move_token = nil;
+#endif
+	free(w);
 }
 
-void window_move(window *w, uint32_t x, uint32_t y) {
-	if ([w->view superview] != nil)
+void window_draw(window * w, unsigned char * data, int32_t dx, int32_t dy, int32_t dw, int32_t dh, int32_t wx, int32_t wy, int32_t width, int32_t height) {
+	[w->view draw:data dx:dx dy:dy dw:dw dh:dh wx:wx wy:wy width:width height:height];
+}
+
+void * window_get_handle(window * w) {
+	return (__bridge void *)w->view;
+}
+
+uint32_t window_get_width(window * w) {
+	return w->view.frame.size.width;
+}
+
+uint32_t window_get_height(window * w) {
+	return w->view.frame.size.height;
+}
+
+void window_resize(window * w, uint32_t width, uint32_t height) {
+	if (w->win) {
+		NSRect frame = w->win.frame;
+		frame.size = NSMakeSize(width, height);
+		[w->win setFrame:frame display:YES];
+	} else
+		[w->view setFrameSize:NSMakeSize(width, height)];
+}
+
+void window_move(window * w, uint32_t x, uint32_t y) {
+	if (w->win)
+		[w->win setFrameOrigin:NSMakePoint(x, y)];
+	else
 		[w->view setFrameOrigin:NSMakePoint(x, y)];
-	else if (w->nswindow)
-		[w->nswindow setFrameOrigin:NSMakePoint(x, y)];
 }
 
-void* window_get_handle(window *w) {
-	return (__bridge void *)(w->view);
+void window_show(window * w) {
+	if (w->win)
+		[w->win makeKeyAndOrderFront:nil];
+	else
+		w->view.hidden = NO;
 }
 
-uint32_t window_get_width(window *w) {
-	return [w->view bounds].size.width;
-}
-uint32_t window_get_height(window *w) {
-	return [w->view bounds].size.height;
-}
-
-void window_show(window *w) {
-	if ([w->view superview] != nil && !w->owns_nswindow) {
-		[w->view setHidden:NO];
-		return;
-	}
-	if (w->nswindow)
-		[w->nswindow setIsVisible:YES];
+void window_hide(window * w) {
+	if (w->win)
+		[w->win orderOut:nil];
+	else
+		w->view.hidden = YES;
 }
 
-void window_hide(window *w) {
-	if ([w->view superview] != nil && !w->owns_nswindow) {
-		[w->view setHidden:YES];
-		return;
-	}
-	if (w->nswindow)
-		[w->nswindow setIsVisible:NO];
-}
-
-void window_set_data(window *w, void *data) {
+void window_set_data(window * w, void * data) {
 	w->data = data;
 }
 
-void *window_get_data(window *w) {
+void * window_get_data(window * w) {
 	return w->data;
 }

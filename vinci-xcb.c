@@ -1,7 +1,7 @@
 /*
  * Vinci
  *
- * Copyright (C) 2021-2025 Orastron Srl unipersonale
+ * Copyright (C) 2021-2026 Orastron Srl unipersonale
  *
  * Vinci is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -314,7 +314,7 @@ void vinci_idle(vinci *g) {
 
 #define XEMBED_MAPPED (1 << 0)
 
-window* window_new(vinci* g, void* p, uint32_t width, uint32_t height, window_cbs *cbs) {
+window* window_new(vinci* g, void* p, uint32_t width, uint32_t height, char visible, window_cbs *cbs) {
 	// make C++ compilers happy
 	uint32_t mask;
 	uint32_t values[1];
@@ -353,6 +353,12 @@ window* window_new(vinci* g, void* p, uint32_t width, uint32_t height, window_cb
 	xembed_info[0] = 0;
 	xembed_info[1] = 0;
 	xcb_change_property(g->connection, XCB_PROP_MODE_REPLACE, ret->window, g->xembed_info_atom, g->xembed_info_atom, 32, 2, xembed_info);
+
+	if (visible) {
+		xembed_info[1] = XEMBED_MAPPED;
+		xcb_change_property(g->connection, XCB_PROP_MODE_REPLACE, ret->window, g->xembed_info_atom, g->xembed_info_atom, 32, 2, xembed_info);
+		xcb_map_window(g->connection, ret->window);
+	}
 
 	// subscribe to window close events
 	xcb_change_property(g->connection, XCB_PROP_MODE_REPLACE, ret->window, g->wm_protocols_atom, XCB_ATOM_ATOM, 32, 1, &(g->wm_delete_atom));
@@ -424,7 +430,7 @@ void window_draw(window* w, unsigned char *data, int32_t dx, int32_t dy, int32_t
 	const int32_t wy_ = wy < 0 ? 0 : wy;
 	width  = width  - (wx_ - wx);
 	height = height - (wy_ - wy);
-	if (width <= 0 || height <= 0 )
+	if (width <= 0 || height <= 0)
 		return;
 	dx = dx + (wx_ - wx);
 	dy = dy + (wy_ - wy);
