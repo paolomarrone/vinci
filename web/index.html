@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vinci · Browser demo</title>
+<style>
+	body { max-width: 760px; margin: 40px auto; padding: 0 20px; background: #101820; color: #e8edf2; font: 16px system-ui; }
+	h1 { margin-bottom: 8px; }
+	p { line-height: 1.5; color: #b9c8d5; }
+	#views { display: flex; flex-wrap: wrap; gap: 24px; margin: 24px 0; }
+	article { padding: 16px; background: #1b2a38; border-radius: 8px; }
+	canvas { outline-offset: 3px; }
+	button { margin: 12px 6px 0 0; padding: 6px 12px; cursor: pointer; }
+	output { display: block; font: 13px monospace; margin-top: 12px; }
+</style>
+<h1>Vinci in the browser</h1>
+<p>The same C drawing API, on two independent canvases. Move or drag to paint;
+click a canvas and type to change its colour. Resize, close and recreate each view.</p>
+<button id="add">Add a view</button>
+<div id="views"></div>
+<output id="error" role="alert"></output>
+<script type="module">
+	import { VinciWeb } from './vinci-web.js';
+	const views = document.querySelector('#views');
+	const adapter = new VinciWeb(views);
+	const response = await fetch('./demo.wasm');
+	if (!response.ok) throw new Error(`Loading demo.wasm: ${response.status}`);
+	const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), adapter.imports);
+	adapter.bind(instance);
+	const wasm = instance.exports;
+	const demos = new Map();
+	let number = 0, frame;
+	function add() {
+		const article = document.createElement('article');
+		const mount = document.createElement('div');
+		const title = document.createElement('h2');
+		title.textContent = `View ${++number}`;
+		article.append(title, mount);
+		views.append(article);
+		const parent = adapter.registerParent(mount);
+		const d = wasm.demo_new(parent, number % 2 ? 0x326b89 : 0x527c60);
+		if (!d) { adapter.unregisterParent(parent); article.remove(); throw new Error('Window creation failed'); }
+		const handle = wasm.demo_handle(d);
+		adapter.getCanvas(handle).setAttribute('aria-label', title.textContent);
+		const resize = document.createElement('button');
+		resize.textContent = 'Resize';
+		resize.onclick = () => {
+			const c = adapter.getCanvas(handle);
+			adapter.resize(handle, c.width === 320 ? 256 : 320, c.height === 192 ? 240 : 192);
+		};
+		const close = document.createElement('button');
+		close.textContent = 'Close';
+		close.onclick = () => adapter.close(handle);
+		const output = document.createElement('output');
+		article.append(resize, close, output);
+		demos.set(d, { article, parent, output });
+	}
+	function tick() {
+		adapter.idle();
+		for (const [d, view] of demos) {
+			if (!wasm.demo_handle(d)) {
+				wasm.demo_free(d);
+				adapter.unregisterParent(view.parent);
+				view.article.remove();
+				demos.delete(d);
+			} else view.output.textContent = `Events: ${wasm.demo_events(d)} · Last key: ${wasm.demo_key(d)}`;
+		}
+		frame = requestAnimationFrame(tick);
+	}
+	document.querySelector('#add').onclick = add;
+	window.addEventListener('pagehide', () => {
+		cancelAnimationFrame(frame);
+		for (const d of demos.keys()) wasm.demo_free(d);
+		demos.clear();
+		adapter.dispose();
+	}, { once: true });
+	add(); add(); tick();
+</script>
+<script>
+	window.addEventListener('error', e => document.querySelector('#error').textContent = e.message);
+	window.addEventListener('unhandledrejection', e => document.querySelector('#error').textContent = String(e.reason));
+</script>
+</html>

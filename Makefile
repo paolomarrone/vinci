@@ -50,4 +50,35 @@ $(BUILD_DIR)/test: test.c $(VINCI_SRC) | $(BUILD_DIR)
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean
+WEB_CC ?= clang
+WEB_CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror
+WEB_FLAGS = --target=wasm32-unknown-unknown -ffreestanding -fno-builtin -I. -Iweb
+WEB_API = vinci_new vinci_destroy vinci_idle window_new window_free window_draw \
+	window_get_handle window_get_width window_get_height window_resize window_move \
+	window_show window_hide window_set_data window_get_data
+WEB_LDFLAGS = -nostdlib -Wl,--no-entry,--export-memory,--fatal-warnings \
+	-Wl,-z,stack-size=65536,--initial-memory=131072,--max-memory=67108864 \
+	$(foreach name,$(WEB_API),-Wl,--export=$(name))
+
+web: $(BUILD_DIR)/web/demo.wasm $(BUILD_DIR)/web/index.html $(BUILD_DIR)/web/vinci-web.js
+
+$(BUILD_DIR)/web/demo.wasm: vinci-web.c vinci.h web/demo.c web/memory.c web/stdlib.h
+	mkdir -p $(dir $@)
+	$(WEB_CC) $(WEB_FLAGS) $(WEB_CFLAGS) vinci-web.c web/demo.c web/memory.c $(WEB_LDFLAGS) -o $@
+
+$(BUILD_DIR)/web/index.html: web/index.html
+	mkdir -p $(dir $@)
+	cp $< $@
+
+$(BUILD_DIR)/web/vinci-web.js: vinci-web.js
+	mkdir -p $(dir $@)
+	cp $< $@
+
+$(BUILD_DIR)/web/test.wasm: vinci-web.c vinci.h tests/web.c web/memory.c web/stdlib.h
+	mkdir -p $(dir $@)
+	$(WEB_CC) $(WEB_FLAGS) $(WEB_CFLAGS) vinci-web.c tests/web.c web/memory.c $(WEB_LDFLAGS) -o $@
+
+test-web: web $(BUILD_DIR)/web/test.wasm
+	node tests/web.mjs $(BUILD_DIR)/web
+
+.PHONY: all clean web test-web
