@@ -20,8 +20,6 @@
 
 #include "vinci.h"
 
-#include <stdlib.h>
-#include <string.h>
 #import <Cocoa/Cocoa.h>
 
 #if __has_feature(objc_arc)
@@ -31,19 +29,15 @@
 #endif
 
 struct vinci {
-	window *windows;
+	char x;
 };
 
 vinci * vinci_new(void) {
 	vinci * v = (vinci *)malloc(sizeof(vinci));
-	if (v)
-		v->windows = NULL;
 	return v;
 }
 
 void vinci_destroy(vinci * g) {
-	while (g->windows)
-		window_free(g->windows);
 	free(g);
 }
 
@@ -69,7 +63,7 @@ void vinci_idle(vinci * g) {
 
 @implementation VinciView {
 	void *				handle;
-	window_cbs		cbs;
+	window_cbs *		cbs;
 	uint8_t *			fb;
 	NSTrackingArea *	trackingArea;
 }
@@ -79,15 +73,18 @@ void vinci_idle(vinci * g) {
 	if (!self)
 		return nil;
 	handle = h;
-	cbs = *callbacks;
-
+	cbs = callbacks;
+	
 	fb = (uint8_t *)calloc(frame.size.width * frame.size.height, 4); // handling NULL, no worries
 	[self initFb];
-
+	
 	return self;
 }
 
 - (void)dealloc {
+	if (cbs && cbs->on_window_close)
+		cbs->on_window_close(handle);
+
 	[self removeTrackingArea];
 	if (fb)
 		free(fb);
@@ -97,19 +94,15 @@ void vinci_idle(vinci * g) {
 }
 
 - (void)invalidate {
-	memset(&cbs, 0, sizeof(cbs));
+	// The view can outlive its window, so keep a valid, empty callback table.
+	static window_cbs empty_cbs = { 0 };
+	cbs = &empty_cbs;
 	handle = NULL;
-}
-
-- (void)removeFromSuperview {
-	[super removeFromSuperview];
-	if (cbs.on_window_close)
-		cbs.on_window_close(handle);
 }
 
 - (void)setFrameSize:(NSSize)newSize {
     [super setFrameSize:newSize];
-
+	
 	size_t s = newSize.width * newSize.height * 4;
 	uint8_t * newFb = s ? (uint8_t *)realloc(fb, s) : NULL;
 	if (newFb) {
@@ -121,15 +114,15 @@ void vinci_idle(vinci * g) {
 	}
 	[self initFb];
 
-	if (cbs.on_window_resize)
-		cbs.on_window_resize(handle, newSize.width, newSize.height);
+	if (cbs->on_window_resize)
+		cbs->on_window_resize(handle, newSize.width, newSize.height);
 }
 
 - (void)setFrameOrigin:(NSPoint)newOrigin {
     [super setFrameOrigin:newOrigin];
-
-	if (cbs.on_window_move)
-		cbs.on_window_move(handle, newOrigin.x, newOrigin.y);
+	
+	if (cbs->on_window_move)
+		cbs->on_window_move(handle, newOrigin.x, newOrigin.y);
 }
 
 // TODO: this could be optimized by keeping a CGImage around repainting the dirty region etc.
@@ -182,43 +175,23 @@ void vinci_idle(vinci * g) {
 - (void)draw:(unsigned char *)data dx:(int32_t)dx dy:(int32_t)dy dw:(int32_t)dw dh:(int32_t)dh wx:(int32_t)wx wy:(int32_t)wy width:(int32_t)width height:(int32_t)height {
 	if (!fb)
 		return;
-
+	
 	NSSize size = [self bounds].size;
-	const int32_t vw = (int32_t)size.width;
-	const int32_t vh = (int32_t)size.height;
-
-	if (dx < 0) {
-		width += dx;
-		wx -= dx;
-		dx = 0;
-	}
-	if (dy < 0) {
-		height += dy;
-		wy -= dy;
-		dy = 0;
-	}
-	if (wx < 0) {
-		width += wx;
-		dx -= wx;
-		wx = 0;
-	}
-	if (wy < 0) {
-		height += wy;
-		dy -= wy;
-		wy = 0;
-	}
-	if (dx >= dw || dy >= dh || wx >= vw || wy >= vh)
+	
+	if (dx >= dw || dy >= dh || dw <= 0 || dh <= 0 || wx >= size.width || wy >= size.height || width <= 0 || height <= 0)
 		return;
-	if (width > dw - dx)
+	dx = dx < 0 ? 0 : dx;
+	dy = dy < 0 ? 0 : dy;
+	wx = wx < 0 ? 0 : wx;
+	wy = wy < 0 ? 0 : wy;
+	if (dx + width > dw)
 		width = dw - dx;
-	if (height > dh - dy)
+	if (dy + height > dh)
 		height = dh - dy;
-	if (width > vw - wx)
-		width = vw - wx;
-	if (height > vh - wy)
-		height = vh - wy;
-	if (width <= 0 || height <= 0)
-		return;
+	if (wx + width > size.width)
+		width = size.width - wx;
+	if (wy + height > size.height)
+		height = size.height - wy;
 
 	for (int32_t y = 0; y < height; y++)
 		for (int32_t x = 0; x < width; x++) {
@@ -235,7 +208,7 @@ void vinci_idle(vinci * g) {
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
-
+	
     [self removeTrackingArea];
 	trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
 						options:NSTrackingActiveAlways | NSTrackingInVisibleRect | NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved
@@ -252,103 +225,93 @@ void vinci_idle(vinci * g) {
 
 - (void)mouseEntered:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_enter)
-		cbs.on_mouse_enter(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_enter)
+		cbs->on_mouse_enter(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)mouseExited:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_leave)
-		cbs.on_mouse_leave(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_leave)
+		cbs->on_mouse_leave(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)mouseDragged:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_press)
-		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_press)
+		cbs->on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)mouseUp:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_release)
-		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_release)
+		cbs->on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)rightMouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_press)
-		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_press)
+		cbs->on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)rightMouseUp:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_release)
-		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_release)
+		cbs->on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)otherMouseMoved:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)otherMouseDragged:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_move)
-		cbs.on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_move)
+		cbs->on_mouse_move(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)otherMouseDown:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_press)
-		cbs.on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_press)
+		cbs->on_mouse_press(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
 - (void)otherMouseUp:(NSEvent *)event {
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    if (cbs.on_mouse_release)
-		cbs.on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
+    if (cbs->on_mouse_release)
+		cbs->on_mouse_release(handle, p.x, self.frame.size.height - p.y, [NSEvent pressedMouseButtons]);
 }
 
-- (void)keyDown:(NSEvent *)event {
-	if (cbs.on_key_press)
-		cbs.on_key_press(handle, (uint32_t)event.keyCode, (uint32_t)event.modifierFlags);
-}
-
-- (void)keyUp:(NSEvent *)event {
-	if (cbs.on_key_release)
-		cbs.on_key_release(handle, (uint32_t)event.keyCode, (uint32_t)event.modifierFlags);
-}
+// TODO: key press, key release
 
 @end
 
 struct window {
-	vinci *		g;
-	window *	next;
 	VinciView *	view;
 	NSWindow *	win;
 	window_cbs	cbs;
@@ -358,11 +321,12 @@ struct window {
 };
 
 window * window_new(vinci * g, void * parent, uint32_t width, uint32_t height, char visible, window_cbs * cbs) {
+	(void)g;
+
 	window * w = (window *)calloc(1, sizeof(window));
 	if (w == NULL)
 		goto err_w;
-
-	w->g = g;
+	
 	if (cbs)
 		w->cbs = *cbs;
 	w->data = NULL;
@@ -370,10 +334,11 @@ window * window_new(vinci * g, void * parent, uint32_t width, uint32_t height, c
 	w->view = [[VinciView alloc] init:NSMakeRect(0, 0, width, height) handle:w callbacks:&w->cbs];
 	if (!w->view)
 		goto err_view;
-
+	
 	if (parent) {
 		w->win = nil;
 		[((__bridge NSView *)parent) addSubview:w->view];
+		// TODO: on_window_close not implemented... it's a pain
 	} else {
 		w->win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
 					styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
@@ -397,10 +362,7 @@ window * window_new(vinci * g, void * parent, uint32_t width, uint32_t height, c
 				w->cbs.on_window_move(w, w->win.frame.origin.x, w->win.frame.origin.y);
 		}];
 	}
-
-	w->next = g->windows;
-	g->windows = w;
-
+	
 	if (visible)
 		window_show(w);
 	else
@@ -418,19 +380,11 @@ err_w:
 }
 
 void window_free(window * w) {
-	window **link = &w->g->windows;
-	while (*link && *link != w)
-		link = &(*link)->next;
-	if (!*link)
-		return;
-	*link = w->next;
-
 	if (w->win) {
 		[[NSNotificationCenter defaultCenter] removeObserver:w->will_close_token];
 		[[NSNotificationCenter defaultCenter] removeObserver:w->will_move_token];
 	}
 	[w->view invalidate];
-	[w->view removeTrackingArea];
 	[w->view removeFromSuperview];
 	if (w->win) {
 		[w->win setContentView:nil];
@@ -438,10 +392,8 @@ void window_free(window * w) {
 	}
 	_OBJC_RELEASE(w->view);
 	_OBJC_RELEASE(w->win);
-#if __has_feature(objc_arc)
 	w->will_close_token = nil;
 	w->will_move_token = nil;
-#endif
 	free(w);
 }
 
@@ -465,7 +417,7 @@ void window_resize(window * w, uint32_t width, uint32_t height) {
 	if (w->win) {
 		NSRect frame = w->win.frame;
 		frame.size = NSMakeSize(width, height);
-		[w->win setFrame:frame display:YES];
+		[w->win setFrame:frame display:YES];	
 	} else
 		[w->view setFrameSize:NSMakeSize(width, height)];
 }
